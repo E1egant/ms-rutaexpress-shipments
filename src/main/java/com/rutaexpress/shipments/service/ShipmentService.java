@@ -7,6 +7,8 @@ import com.rutaexpress.shipments.domain.Shipment;
 import com.rutaexpress.shipments.domain.ShipmentRepository;
 import com.rutaexpress.shipments.exception.InvalidStateTransitionException;
 import com.rutaexpress.shipments.exception.ResourceNotFoundException;
+import com.rutaexpress.shipments.messaging.NotificationPublisher;
+import com.rutaexpress.shipments.messaging.ShipmentEventPublisher;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -17,10 +19,15 @@ public class ShipmentService {
 
     private final ShipmentRepository repository;
     private final ShipmentMapper mapper;
+    private final ShipmentEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
 
-    public ShipmentService(ShipmentRepository repository, ShipmentMapper mapper) {
+    public ShipmentService(ShipmentRepository repository, ShipmentMapper mapper,
+            ShipmentEventPublisher eventPublisher, NotificationPublisher notificationPublisher) {
         this.repository = repository;
         this.mapper = mapper;
+        this.eventPublisher = eventPublisher;
+        this.notificationPublisher = notificationPublisher;
     }
 
     @Transactional
@@ -28,7 +35,11 @@ public class ShipmentService {
         validate(request);
         Shipment shipment = mapper.toEntity(request);
         shipment.setTrackingNumber(generateTrackingNumber());
-        return mapper.toResponse(repository.save(shipment));
+        Shipment saved = repository.save(shipment);
+        eventPublisher.publish(saved);
+        notificationPublisher.publish("email", saved.getRecipient().getEmail(),
+                "Envío registrado", "Tu envío " + saved.getTrackingNumber() + " fue registrado.");
+        return mapper.toResponse(saved);
     }
 
     @Transactional(readOnly = true)
@@ -48,7 +59,13 @@ public class ShipmentService {
             throw new InvalidStateTransitionException(shipment.getStatus(), target);
         }
         shipment.setStatus(target);
-        return mapper.toResponse(repository.save(shipment));
+        Shipment saved = repository.save(shipment);
+        eventPublisher.publish(saved);
+        if (target == ShipmentStatus.DELIVERED) {
+            notificationPublisher.publish("email", saved.getRecipient().getEmail(),
+                    "Entrega completada", "Tu envío " + saved.getTrackingNumber() + " fue entregado.");
+        }
+        return mapper.toResponse(saved);
     }
 
     private Shipment load(Long id) {
